@@ -199,8 +199,8 @@ class TrackingApp(ctk.CTk):
         ctk.CTkLabel(controls, text="Decay calor:").grid(row=1, column=0, padx=5, pady=5)
         self.decay_slider = ctk.CTkSlider(
             controls, from_=0.9, to=0.999,
-            value=0.985
         )
+        self.decay_slider.set(0.985)
         self.decay_slider.grid(row=1, column=1, padx=5, pady=5)
 
         self.show_heatmap_var = ctk.CTkCheckBox(
