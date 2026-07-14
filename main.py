@@ -23,7 +23,9 @@ import time
 from datetime import datetime
 
 import customtkinter as ctk
+from customtkinter import filedialog
 import cv2
+import numpy as np
 
 import tracker as trk
 import speed as spd
@@ -58,6 +60,7 @@ class TrackingApp(ctk.CTk):
         self.speed_calc = None
         self.stabilizer = None
         self.prev_bboxes = None  # Para el estabilizador (parte d)
+        self.heatmap_window_open = False
 
         # --- Construir UI ---
         self._build_ui()
@@ -107,13 +110,19 @@ class TrackingApp(ctk.CTk):
         )
         self.video_path_entry.grid(row=0, column=3, padx=5, pady=5)
 
-        ctk.CTkLabel(controls, text="Tracker:").grid(row=0, column=4, padx=5, pady=5)
+        self.btn_browse_b = ctk.CTkButton(
+            controls, text="📂", width=35,
+            command=lambda: self._browse_file(self.video_path_entry)
+        )
+        self.btn_browse_b.grid(row=0, column=4, padx=2, pady=5)
+
+        ctk.CTkLabel(controls, text="Tracker:").grid(row=0, column=5, padx=5, pady=5)
         self.tracker_type_var = ctk.StringVar(value="bytetrack")
         self.tracker_menu = ctk.CTkOptionMenu(
             controls, variable=self.tracker_type_var,
             values=["bytetrack", "botsort"]
         )
-        self.tracker_menu.grid(row=0, column=5, padx=5, pady=5)
+        self.tracker_menu.grid(row=0, column=6, padx=5, pady=5)
 
         ctk.CTkLabel(controls, text="Modelo YOLO:").grid(row=1, column=0, padx=5, pady=5)
         self.model_var = ctk.StringVar(value="yolov8n.pt")
@@ -129,6 +138,22 @@ class TrackingApp(ctk.CTk):
             width=120
         )
         self.line_y_entry.grid(row=1, column=3, padx=5, pady=5)
+
+        # --- Estado / feedback ---
+        self.status_label_b = ctk.CTkLabel(
+            tab, text="Listo. Selecciona fuente y presiona Iniciar.",
+            font=ctk.CTkFont(size=13),
+            text_color="#aaaaaa"
+        )
+        self.status_label_b.pack(fill="x", padx=10, pady=(5, 0))
+
+        # --- Estado / feedback ---
+        self.status_label_c = ctk.CTkLabel(
+            tab, text="Listo. Selecciona fuente y presiona Iniciar.",
+            font=ctk.CTkFont(size=13),
+            text_color="#aaaaaa"
+        )
+        self.status_label_c.pack(fill="x", padx=10, pady=(5, 0))
 
         # --- Botones ---
         btn_frame = ctk.CTkFrame(tab)
@@ -189,12 +214,18 @@ class TrackingApp(ctk.CTk):
         )
         self.video_path_entry_c.grid(row=0, column=3, padx=5, pady=5)
 
-        ctk.CTkLabel(controls, text="px por metro:").grid(row=0, column=4, padx=5, pady=5)
+        self.btn_browse_c = ctk.CTkButton(
+            controls, text="📂", width=35,
+            command=lambda: self._browse_file(self.video_path_entry_c)
+        )
+        self.btn_browse_c.grid(row=0, column=4, padx=2, pady=5)
+
+        ctk.CTkLabel(controls, text="px por metro:").grid(row=0, column=5, padx=5, pady=5)
         self.px_per_meter_entry = ctk.CTkEntry(
             controls, placeholder_text="ej: 50 (0=desactivado)",
             width=100
         )
-        self.px_per_meter_entry.grid(row=0, column=5, padx=5, pady=5)
+        self.px_per_meter_entry.grid(row=0, column=6, padx=5, pady=5)
 
         ctk.CTkLabel(controls, text="Decay calor:").grid(row=1, column=0, padx=5, pady=5)
         self.decay_slider = ctk.CTkSlider(
@@ -232,6 +263,12 @@ class TrackingApp(ctk.CTk):
         )
         self.btn_report_c.grid(row=0, column=2, padx=5, pady=5)
 
+        self.btn_heatmap_c = ctk.CTkButton(
+            btn_frame, text="🔥 Ver Heatmap",
+            command=self.toggle_heatmap_window
+        )
+        self.btn_heatmap_c.grid(row=0, column=3, padx=5, pady=5)
+
         # --- Frame del video ---
         self.video_frame_c = ctk.CTkLabel(tab, text="")
         self.video_frame_c.pack(fill="both", expand=True, padx=10, pady=5)
@@ -268,12 +305,18 @@ class TrackingApp(ctk.CTk):
         )
         self.video_path_entry_d.grid(row=0, column=3, padx=5, pady=5)
 
-        ctk.CTkLabel(controls, text="Mostrar features").grid(row=0, column=4, padx=5, pady=5)
+        self.btn_browse_d = ctk.CTkButton(
+            controls, text="📂", width=35,
+            command=lambda: self._browse_file(self.video_path_entry_d)
+        )
+        self.btn_browse_d.grid(row=0, column=4, padx=2, pady=5)
+
+        ctk.CTkLabel(controls, text="Mostrar features").grid(row=0, column=5, padx=5, pady=5)
         self.show_features_var = ctk.CTkCheckBox(
             controls, text="En/morado"
         )
         self.show_features_var.select()
-        self.show_features_var.grid(row=0, column=5, padx=5, pady=5)
+        self.show_features_var.grid(row=0, column=6, padx=5, pady=5)
 
         ctk.CTkLabel(controls, text="Comparar orig/estab").grid(row=1, column=0, padx=5, pady=5)
         self.show_compare_var = ctk.CTkCheckBox(
@@ -281,6 +324,14 @@ class TrackingApp(ctk.CTk):
         )
         self.show_compare_var.select()
         self.show_compare_var.grid(row=1, column=1, padx=5, pady=5)
+
+        # --- Estado / feedback ---
+        self.status_label_d = ctk.CTkLabel(
+            tab, text="Listo. Selecciona fuente y presiona Iniciar.",
+            font=ctk.CTkFont(size=13),
+            text_color="#aaaaaa"
+        )
+        self.status_label_d.pack(fill="x", padx=10, pady=(5, 0))
 
         # --- Botones ---
         btn_frame = ctk.CTkFrame(tab)
@@ -320,6 +371,19 @@ class TrackingApp(ctk.CTk):
     # Lógica de los botones
     # ======================================================================
 
+    def _browse_file(self, entry_widget):
+        """Abre un diálogo para seleccionar un archivo de video y pone la ruta en el entry."""
+        filepath = filedialog.askopenfilename(
+            title="Seleccionar video",
+            filetypes=[
+                ("Archivos de video", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if filepath:
+            entry_widget.delete(0, "end")
+            entry_widget.insert(0, filepath)
+
     def _get_source(self, source_var, path_entry):
         """Devuelve el índice de cámara o la ruta del video según la selección."""
         if source_var.get() == "webcam":
@@ -334,18 +398,27 @@ class TrackingApp(ctk.CTk):
             raise ValueError(f"No se pudo abrir la fuente: {source}")
         return cap
 
-    def _frame_to_tk(self, frame, max_width=900):
-        """Convierte un frame OpenCV a CTkImage para mostrarlo en un CTkLabel."""
+    def _frame_to_tk(self, frame, ctk_label):
+        """Convierte un frame OpenCV a CTkImage escalado al tamaño del label."""
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         from PIL import Image
         img = Image.fromarray(frame_rgb)
-        # Escalar si es muy grande
-        if img.width > max_width:
-            ratio = max_width / img.width
-            img = img.resize(
-                (max_width, int(img.height * ratio)),
-                Image.LANCZOS
-            )
+
+        try:
+            label_w = ctk_label.winfo_width()
+            label_h = ctk_label.winfo_height()
+            if label_w > 10 and label_h > 10:
+                ratio_w = label_w / img.width
+                ratio_h = label_h / img.height
+                ratio = min(ratio_w, ratio_h)
+                new_w = int(img.width * ratio)
+                new_h = int(img.height * ratio)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+        except Exception:
+            if img.width > 900:
+                ratio = 900 / img.width
+                img = img.resize((900, int(img.height * ratio)), Image.LANCZOS)
+
         ctk_img = ctk.CTkImage(
             light_image=img, dark_image=img,
             size=img.size
@@ -354,7 +427,7 @@ class TrackingApp(ctk.CTk):
 
     def _update_video_label(self, ctk_label, frame):
         """Actualiza un CTkLabel con un frame de video."""
-        ctk_img = self._frame_to_tk(frame)
+        ctk_img = self._frame_to_tk(frame, ctk_label)
         ctk_label.configure(image=ctk_img)
         ctk_label.image = ctk_img
 
@@ -364,6 +437,59 @@ class TrackingApp(ctk.CTk):
 
     # --- Inicio de cada pestaña ---
 
+    def _set_ui_running(self, tab_name, running):
+        """Activa/desactiva botones y muestra feedback de estado por pestaña."""
+        state = "disabled" if running else "normal"
+        status_text = "⏳ Cargando modelo y abriendo fuente..." if running else "Listo. Selecciona fuente y presiona Iniciar."
+        status_color = "#ffaa00" if running else "#aaaaaa"
+
+        if tab_name == "b":
+            self.btn_start_b.configure(state=state)
+            self.status_label_b.configure(text=status_text, text_color=status_color)
+        elif tab_name == "c":
+            self.btn_start_c.configure(state=state)
+            self.status_label_c.configure(text=status_text, text_color=status_color)
+        elif tab_name == "d":
+            self.btn_start_d.configure(state=state)
+            self.status_label_d.configure(text=status_text, text_color=status_color)
+
+    def _show_error(self, tab_name, message):
+        """Muestra un mensaje de error en el label de estado de la pestaña."""
+        if tab_name == "b":
+            self.status_label_b.configure(text=f"❌ Error: {message}", text_color="#ff4444")
+            self.btn_start_b.configure(state="normal")
+        elif tab_name == "c":
+            self.status_label_c.configure(text=f"❌ Error: {message}", text_color="#ff4444")
+            self.btn_start_c.configure(state="normal")
+        elif tab_name == "d":
+            self.status_label_d.configure(text=f"❌ Error: {message}", text_color="#ff4444")
+            self.btn_start_d.configure(state="normal")
+
+    def _set_ui_processing(self, tab_name):
+        """Cambia el estado a 'procesando' una vez que el video está corriendo."""
+        if tab_name == "b":
+            self.status_label_b.configure(text="▶ Procesando...", text_color="#00cc66")
+        elif tab_name == "c":
+            self.status_label_c.configure(text="▶ Procesando...", text_color="#00cc66")
+        elif tab_name == "d":
+            self.status_label_d.configure(text="▶ Procesando...", text_color="#00cc66")
+
+    def _set_ui_done(self, tab_name):
+        """Restaura la UI al terminar el procesamiento."""
+        if tab_name == "b":
+            self.status_label_b.configure(text="⏹ Detenido.", text_color="#aaaaaa")
+            self.btn_start_b.configure(state="normal")
+        elif tab_name == "c":
+            self.status_label_c.configure(text="⏹ Detenido.", text_color="#aaaaaa")
+            self.btn_start_c.configure(state="normal")
+            if self.heatmap_window_open:
+                cv2.destroyWindow("Mapa de Calor")
+                self.heatmap_window_open = False
+                self.btn_heatmap_c.configure(text="🔥 Ver Heatmap")
+        elif tab_name == "d":
+            self.status_label_d.configure(text="⏹ Detenido.", text_color="#aaaaaa")
+            self.btn_start_d.configure(state="normal")
+
     def start_b(self):
         """Inicia el tracking 2D (parte b)."""
         if self.running:
@@ -371,6 +497,7 @@ class TrackingApp(ctk.CTk):
         source = self._get_source(self.source_var, self.video_path_entry)
         model_path = self.model_var.get()
         tracker_type = self.tracker_type_var.get()
+        self._set_ui_running("b", True)
         self.thread = threading.Thread(
             target=self._run_b, args=(source, model_path, tracker_type),
             daemon=True
@@ -391,6 +518,7 @@ class TrackingApp(ctk.CTk):
             px_per_meter = 0
         decay_val = self.decay_slider.get()
 
+        self._set_ui_running("c", True)
         self.thread = threading.Thread(
             target=self._run_c,
             args=(source, model_path, tracker_type, px_per_meter or None, decay_val),
@@ -406,6 +534,7 @@ class TrackingApp(ctk.CTk):
         model_path = self.model_var.get()
         tracker_type = self.tracker_type_var.get()
 
+        self._set_ui_running("d", True)
         self.thread = threading.Thread(
             target=self._run_d, args=(source, model_path, tracker_type),
             daemon=True
@@ -420,6 +549,19 @@ class TrackingApp(ctk.CTk):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        if self.heatmap_window_open:
+            cv2.destroyWindow("Mapa de Calor")
+            self.heatmap_window_open = False
+
+    def toggle_heatmap_window(self):
+        """Abre o cierra la ventana de OpenCV con el heatmap puro."""
+        if self.heatmap_window_open:
+            cv2.destroyWindow("Mapa de Calor")
+            self.heatmap_window_open = False
+            self.btn_heatmap_c.configure(text="🔥 Ver Heatmap")
+        else:
+            self.heatmap_window_open = True
+            self.btn_heatmap_c.configure(text="🔥 Cerrar Heatmap")
 
     def save_trajectories(self):
         """Guarda las trayectorias en CSV."""
@@ -459,174 +601,204 @@ class TrackingApp(ctk.CTk):
 
     def _run_b(self, source, model_path, tracker_type):
         """Loop de video para la parte (b): Tracking 2D básico."""
-        self.running = True
-        self.cap = self._open_capture(source)
-        self.tracker = trk.ObjectTracker(
-            model_path=model_path,
-            classes=DEFAULT_CLASSES,
-            tracker_type=tracker_type,
-        )
-
-        # Configurar línea virtual
-        line_y_val = self.line_y_entry.get().strip()
-        if line_y_val and line_y_val != "0":
-            self.tracker.set_counting_line(int(line_y_val))
-
-        while self.running and self.cap is not None:
-            ret, frame = self.cap.read()
-            if not ret:
-                break
-
-            frame, detections = self.tracker.process_frame(frame)
-
-            # Actualizar UI desde el hilo principal
-            self._update_video_label(self.video_frame_b, frame)
-            self._update_stats_label(
-                self.stats_label_b,
-                f"Objetos contados: {self.tracker.total_count} | "
-                f"Objetos activos: {len(detections)} | "
-                f"Frame: {self.tracker.frame_idx}"
+        try:
+            self.running = True
+            self.cap = self._open_capture(source)
+            self.tracker = trk.ObjectTracker(
+                model_path=model_path,
+                classes=DEFAULT_CLASSES,
+                tracker_type=tracker_type,
             )
 
-        self.running = False
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+            # Configurar línea virtual
+            line_y_val = self.line_y_entry.get().strip()
+            if line_y_val and line_y_val != "0":
+                self.tracker.set_counting_line(int(line_y_val))
+
+            self._set_ui_processing("b")
+
+            while self.running and self.cap is not None:
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
+
+                frame, detections = self.tracker.process_frame(frame)
+
+                # Actualizar UI desde el hilo principal
+                self._update_video_label(self.video_frame_b, frame)
+                self._update_stats_label(
+                    self.stats_label_b,
+                    f"Objetos contados: {self.tracker.total_count} | "
+                    f"Objetos activos: {len(detections)} | "
+                    f"Frame: {self.tracker.frame_idx}"
+                )
+
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self._set_ui_done("b")
+        except Exception as e:
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self._show_error("b", str(e))
 
     def _run_c(self, source, model_path, tracker_type, px_per_meter, decay_val):
         """Loop de video para la parte (c): Velocidad + Heatmap."""
-        self.running = True
-        self.cap = self._open_capture(source)
-        self.tracker = trk.ObjectTracker(
-            model_path=model_path,
-            classes=DEFAULT_CLASSES,
-            tracker_type=tracker_type,
-        )
-        self.speed_calc = spd.SpeedCalculator(
-            px_per_meter=px_per_meter,
-            decay=decay_val,
-        )
+        try:
+            self.running = True
+            self.cap = self._open_capture(source)
+            self.tracker = trk.ObjectTracker(
+                model_path=model_path,
+                classes=DEFAULT_CLASSES,
+                tracker_type=tracker_type,
+            )
+            self.speed_calc = spd.SpeedCalculator(
+                px_per_meter=px_per_meter,
+                decay=decay_val,
+            )
 
-        show_heat = self.show_heatmap_var.get()
+            show_heat = self.show_heatmap_var.get()
+            self._set_ui_processing("c")
 
-        while self.running and self.cap is not None:
-            ret, frame = self.cap.read()
-            if not ret:
-                break
+            while self.running and self.cap is not None:
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
 
-            # 1. Tracking
-            frame, detections = self.tracker.process_frame(frame)
+                # 1. Tracking
+                frame, detections = self.tracker.process_frame(frame)
 
-            # 2. Velocidad + Heatmap
-            frame = self.speed_calc.annotate_frame(frame, detections)
+                # 2. Velocidad + Heatmap
+                frame = self.speed_calc.annotate_frame(frame, detections)
 
-            self._update_video_label(self.video_frame_c, frame)
+                self._update_video_label(self.video_frame_c, frame)
 
-            # --- Stats de velocidad ---
-            speeds = self.speed_calc.get_all_speeds()
-            if speeds:
-                parts = []
-                for tid, (spx, sreal) in speeds.items():
-                    if sreal is not None:
-                        parts.append(f"ID{tid}: {sreal*3.6:.1f}km/h")
-                    else:
-                        parts.append(f"ID{tid}: {spx:.0f}px/s")
-                speed_text = " | ".join(parts[:8])
-                self._update_stats_label(
-                    self.stats_label_c,
-                    f"Velocidades: {speed_text}"
-                )
-            else:
-                self._update_stats_label(
-                    self.stats_label_c, "Velocidades: (sin datos)"
-                )
+                # --- Ventana de heatmap puro ---
+                if self.heatmap_window_open:
+                    heat_img = self.speed_calc.get_heatmap_image()
+                    if heat_img is not None:
+                        cv2.imshow("Mapa de Calor", heat_img)
+                        cv2.waitKey(1)
 
-        self.running = False
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+                # --- Stats de velocidad ---
+                speeds = self.speed_calc.get_all_speeds()
+                if speeds:
+                    parts = []
+                    for tid, (spx, sreal) in speeds.items():
+                        if sreal is not None:
+                            parts.append(f"ID{tid}: {sreal*3.6:.1f}km/h")
+                        else:
+                            parts.append(f"ID{tid}: {spx:.0f}px/s")
+                    speed_text = " | ".join(parts[:8])
+                    self._update_stats_label(
+                        self.stats_label_c,
+                        f"Velocidades: {speed_text}"
+                    )
+                else:
+                    self._update_stats_label(
+                        self.stats_label_c, "Velocidades: (sin datos)"
+                    )
+
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self._set_ui_done("c")
+        except Exception as e:
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            if self.heatmap_window_open:
+                cv2.destroyWindow("Mapa de Calor")
+                self.heatmap_window_open = False
+                self.btn_heatmap_c.configure(text="🔥 Ver Heatmap")
+            self._show_error("c", str(e))
 
     def _run_d(self, source, model_path, tracker_type):
         """
         Loop de video para la parte (d): Odometría visual + tracking.
-
-        Pipeline por frame:
-            1. Capturar frame original.
-            2. Estabilizar el frame con odometría visual (compensar movimiento
-               de cámara con homografía).
-            3. Aplicar tracking 2D sobre el frame ESTABILIZADO.
-            4. Extraer bounding boxes para usarse como máscara en el siguiente
-               frame (evitar que las regiones con objetos contaminen la
-               estimación de la homografía).
-            5. Mostrar original vs estabilizado lado a lado.
         """
-        self.running = True
-        self.cap = self._open_capture(source)
-        self.tracker = trk.ObjectTracker(
-            model_path=model_path,
-            classes=DEFAULT_CLASSES,
-            tracker_type=tracker_type,
-        )
-        self.stabilizer = odo.VisualOdometryStabilizer()
-
-        show_feats = self.show_features_var.get()
-        show_compare = self.show_compare_var.get()
-
-        while self.running and self.cap is not None:
-            ret, frame = self.cap.read()
-            if not ret:
-                break
-
-            # 1. Estabilizar con odometría visual
-            strok_lbl, detections_bboxes = None, None
-            stabilized, H = self.stabilizer.stabilize(
-                frame, prev_bboxes=self.prev_bboxes
+        try:
+            self.running = True
+            self.cap = self._open_capture(source)
+            self.tracker = trk.ObjectTracker(
+                model_path=model_path,
+                classes=DEFAULT_CLASSES,
+                tracker_type=tracker_type,
             )
+            self.stabilizer = odo.VisualOdometryStabilizer()
 
-            # 2. Tracking sobre el frame estabilizado
-            stab_processed, detections = self.tracker.process_frame(stabilized)
+            show_feats = self.show_features_var.get()
+            show_compare = self.show_compare_var.get()
+            self._set_ui_processing("d")
 
-            # 3. Extraer bboxes para el siguiente frame
-            self.prev_bboxes = [d["bbox"] for d in detections]
+            while self.running and self.cap is not None:
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
 
-            # 4. Mostrar información de la homografía
-            if H is not None:
-                # La translación de la homografía nos dice cuánto se movió la cam.
-                tx = H[0, 2]
-                ty = H[1, 2]
-                h_text = f"H transl=({tx:.1f},{ty:.1f}) | Objs: {len(detections)}"
-            else:
-                h_text = f"Odometría: H = I (sin movimiento) | Objs: {len(detections)}"
-            self._update_stats_label(self.stats_label_d, h_text)
+                # 1. Estabilizar con odometría visual
+                stabilized, H = self.stabilizer.stabilize(
+                    frame, prev_bboxes=self.prev_bboxes
+                )
 
-            # 5. Visualización: comparación lado a lado o solo estabilizado
-            if show_compare:
-                # Redimensionar ambos al 50% de ancho para caber
-                h, w = frame.shape[:2]
-                small_w = w // 2
-                orig_resized = cv2.resize(frame, (small_w, h))
-                stab_resized = cv2.resize(stab_processed, (small_w, h))
-                # Etiquetas
-                cv2.putText(orig_resized, "ORIGINAL", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.putText(stab_resized, "ESTABILIZADO", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                display = np.hstack([orig_resized, stab_resized])
-            else:
-                display = stab_processed
+                # Si el estabilizador recentró, resetear trayectorias del tracker
+                if self.stabilizer.recentered:
+                    self.tracker.reset_state()
+                    self.stabilizer.recentered = False
 
-            # Opcional: dibujar puntos features detectados
-            if show_feats and self.stabilizer.prev_keypoints is not None:
-                for kp in self.stabilizer.prev_keypoints:
-                    x, y = int(kp[0][0]), int(kp[0][1])
-                    cv2.circle(display, (x, y), 3, (255, 0, 255), -1)
+                # 2. Tracking sobre el frame estabilizado
+                stab_processed, detections = self.tracker.process_frame(stabilized)
 
-            self._update_video_label(self.video_frame_d, display)
+                # 3. Extraer bboxes para el siguiente frame
+                self.prev_bboxes = [d["bbox"] for d in detections]
 
-        self.running = False
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+                # 4. Mostrar información de la homografía
+                if H is not None:
+                    tx = H[0, 2]
+                    ty = H[1, 2]
+                    h_text = f"H transl=({tx:.1f},{ty:.1f}) | Objs: {len(detections)}"
+                else:
+                    h_text = f"Odometría: H = I (sin movimiento) | Objs: {len(detections)}"
+                self._update_stats_label(self.stats_label_d, h_text)
+
+                # 5. Visualización: comparación lado a lado o solo estabilizado
+                if show_compare:
+                    h, w = frame.shape[:2]
+                    small_w = w // 2
+                    small_h = h // 2
+                    orig_resized = cv2.resize(frame, (small_w, small_h))
+                    stab_resized = cv2.resize(stab_processed, (small_w, small_h))
+                    cv2.putText(orig_resized, "ORIGINAL", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.putText(stab_resized, "ESTABILIZADO", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    display = np.hstack([orig_resized, stab_resized])
+                else:
+                    display = stab_processed
+
+                if show_feats and self.stabilizer.prev_keypoints is not None:
+                    for kp in self.stabilizer.prev_keypoints:
+                        x, y = int(kp[0][0]), int(kp[0][1])
+                        cv2.circle(display, (x, y), 3, (255, 0, 255), -1)
+
+                self._update_video_label(self.video_frame_d, display)
+
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self._set_ui_done("d")
+        except Exception as e:
+            self.running = False
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            self._show_error("d", str(e))
 
 
 # --- Entry point ---

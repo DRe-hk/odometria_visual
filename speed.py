@@ -40,7 +40,7 @@ class SpeedCalculator:
         Dimensiones del frame para redimensionar el acumulador de calor.
     """
 
-    def __init__(self, px_per_meter=None, decay=0.985, heat_radius=15):
+    def __init__(self, px_per_meter=None, decay=0.985, heat_radius=15, zone_grid_size=50):
         """
         Parameters
         ----------
@@ -51,28 +51,44 @@ class SpeedCalculator:
             Factor de decaimiento del heatmap (0-1). Cerca de 1 el
             calor persiste más; valores menores lo desvanecen rápido.
         heat_radius : int
-            Radio del círculo gaussiano depositado en el heatmap
+            Radio del kernel gaussiano depositado en el heatmap
             por cada posición de objeto.
+        zone_grid_size : int
+            Tamaño en píxeles de cada celda de la grilla de zonas.
         """
         self.px_per_meter = px_per_meter
         self.decay = decay
         self.heat_radius = heat_radius
+        self.zone_grid_size = zone_grid_size
 
         self.speeds = {}
         self.last_positions = {}  # id -> (x, y, timestamp)
         self.heat_accum = None
         self.zone_visits = defaultdict(list)
+        self.zone_freq = defaultdict(int)  # (zx, zy) -> contador de visitas
+        self._gaussian_kernel = self._make_gaussian_kernel(heat_radius)
 
     def init_heatmap(self, height, width):
         """Inicializa (o redimensiona) el acumulador del mapa de calor."""
         if self.heat_accum is None or self.heat_accum.shape[:2] != (height, width):
             self.heat_accum = np.zeros((height, width), dtype=np.float32)
 
+    def _make_gaussian_kernel(self, radius):
+        """Crea un kernel gaussiano 2D para el depósito de calor."""
+        size = 2 * radius + 1
+        ax = np.arange(-radius, radius + 1)
+        xx, yy = np.meshgrid(ax, ax)
+        sigma = radius / 2.5
+        kernel = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+        kernel /= kernel.max()
+        return kernel
+
     def reset(self):
         """Reinicia todos los estados."""
         self.speeds.clear()
         self.last_positions.clear()
         self.zone_visits.clear()
+        self.zone_freq.clear()
         self.heat_accum = None
 
     def set_px_per_meter(self, px_per_meter):
@@ -119,19 +135,31 @@ class SpeedCalculator:
 
     def update_heatmap(self, cx, cy):
         """
-        Depósita un "punto de calor" gaussiano en la posición (cx, cy).
+        Depósita un punto de calor con kernel gaussiano en (cx, cy).
 
-        Se suma al acumulador heat_accum, que luego se normaliza y se
-        mezcla visualmente con el frame.
+        Usa un kernel gaussiano real para que los puntos se fundan
+        suavemente donde se superponen, generando un gradiente natural.
         """
         if self.heat_accum is None:
             return
         ix, iy = int(cx), int(cy)
         h, w = self.heat_accum.shape[:2]
-        if 0 <= ix < w and 0 <= iy < h:
-            # Usar un círculo como fuente de calor
-            cv2.circle(self.heat_accum, (ix, iy),
-                       self.heat_radius, 1.0, -1)
+
+        r = self.heat_radius
+        kernel = self._gaussian_kernel
+
+        # Calcular la región de superposición entre el kernel y el acumulador
+        x1 = max(0, ix - r)
+        y1 = max(0, iy - r)
+        x2 = min(w, ix + r + 1)
+        y2 = min(h, iy + r + 1)
+
+        kx1 = x1 - (ix - r)
+        ky1 = y1 - (iy - r)
+        kx2 = kx1 + (x2 - x1)
+        ky2 = ky1 + (y2 - y1)
+
+        self.heat_accum[y1:y2, x1:x2] += kernel[ky1:ky2, kx1:kx2]
 
     def apply_decay(self):
         """Aplica el decaimiento al acumulador de calor."""
@@ -163,6 +191,28 @@ class SpeedCalculator:
         # Mezclar con el frame (30% heatmap, 70% original)
         return cv2.addWeighted(frame, 0.7, heat_color, 0.3, 0)
 
+    def get_heatmap_image(self):
+        """
+        Devuelve el mapa de calor puro como imagen (sin video de fondo).
+
+        Returns
+        -------
+        np.ndarray | None
+            Imagen del heatmap normalizado + JET, o None si no hay datos.
+        """
+        if self.heat_accum is None:
+            return None
+
+        max_val = self.heat_accum.max()
+        if max_val <= 0:
+            return None
+
+        heat_norm = cv2.normalize(
+            self.heat_accum, None, 0, 255,
+            cv2.NORM_MINMAX, dtype=cv2.CV_8U
+        )
+        return cv2.applyColorMap(heat_norm, cv2.COLORMAP_JET)
+
     def annotate_frame(self, frame, detections):
         """
         Procesa todas las detecciones del frame, actualiza velocidades
@@ -191,12 +241,14 @@ class SpeedCalculator:
             # Calcular velocidad
             speed_px, speed_real = self.compute_speed(tid, cx, cy)
 
-            # Actualizar mapa de calor
+            # Actualizar mapa de calor con kernel gaussiano
             self.update_heatmap(cx, cy)
 
-            # Registrar zona visitada (bucket de 50x50 px)
-            zone = (int(cx) // 50, int(cy) // 50)
+            # Registrar zona visitada
+            gs = self.zone_grid_size
+            zone = (int(cx) // gs, int(cy) // gs)
             self.zone_visits[tid].append(zone)
+            self.zone_freq[zone] += 1
 
             # --- Dibujar velocidad sobre el bounding box ---
             if speed_real is not None:
@@ -214,6 +266,53 @@ class SpeedCalculator:
         self.apply_decay()
         frame = self.get_heatmap_overlay(frame)
 
+        # Dibujar grilla de zonas con frecuencia de visitas
+        frame = self._draw_zone_grid(frame)
+
+        return frame
+
+    def _draw_zone_grid(self, frame):
+        """
+        Dibuja una grilla semitransparente donde cada celda se colorea
+        según la frecuencia acumulada de visitas. Las celdas más
+        visitadas se ven más rojas/calientes.
+        """
+        if not self.zone_freq:
+            return frame
+
+        gs = self.zone_grid_size
+        h, w = frame.shape[:2]
+
+        # Encontrar el máximo de visitas para normalizar
+        max_freq = max(self.zone_freq.values()) if self.zone_freq else 1
+
+        # Crear overlay para la grilla
+        overlay = frame.copy()
+
+        for (zx, zy), freq in self.zone_freq.items():
+            x1 = zx * gs
+            y1 = zy * gs
+            x2 = min(x1 + gs, w)
+            y2 = min(y1 + gs, h)
+
+            # Intensidad normalizada
+            alpha = freq / max_freq  # 0.0 a 1.0
+
+            # Color: verde (poco) → amarillo → rojo (mucho)
+            if alpha < 0.5:
+                r = int(alpha * 2 * 255)
+                g = 255
+                b = 0
+            else:
+                r = 255
+                g = int((1.0 - alpha) * 2 * 255)
+                b = 0
+
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (b, g, r), -1)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (b, g, r), 1)
+
+        # Mezclar overlay al 25%
+        frame = cv2.addWeighted(overlay, 0.25, frame, 0.75, 0)
         return frame
 
     def get_all_speeds(self):
